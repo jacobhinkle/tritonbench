@@ -23,6 +23,34 @@ from common import setup_tritonbench_cwd
 
 setup_tritonbench_cwd()
 
+from tritonbench.utils.env_utils import IS_BLACKWELL
+
+TLX_BENCHMARKS_BLACKWELL = {
+    "gemm": [
+        "tlx_matmul",
+        "tlx_matmul_ws",
+        "tlx_matmul_clc",
+        "tlx_matmul_pipelined",
+        "tlx_matmul_2cta",
+    ],
+}
+
+def gen_tlx_benchmarks():
+    acc: dict[Unknown, Unknown] = {}
+    for op in TLX_BENCHMARKS_BLACKWELL:
+        for backend in TLX_BENCHMARKS_BLACKWELL[op]:
+            if op not in acc:
+                acc[op] = {backend: {"tags": ["tlx"]}}
+            else:
+                acc[op].update(
+                    {
+                        backend: {
+                            "tags": ["tlx"],
+                        }
+                    }
+                )
+    return acc
+
 
 def gen_tlx_benchmark_config() -> Dict[str, Any]:
     from tlx_tutorial_plugin import load_tlx_tutorial_backends
@@ -42,6 +70,8 @@ def gen_tlx_benchmark_config() -> Dict[str, Any]:
 
     out = _load_benchmarks(os.path.join(CURRENT_DIR, "tlx_benchmarks.yaml"))
     tlx_tutorial_benchmark_metadata = load_tlx_tutorial_backends()
+    if IS_BLACKWELL:
+        tlx_tutorial_benchmark_metadata.update(gen_tlx_benchmarks())
     # only load benchmarks from runtime metadata
     metadata_benchmarks = get_benchmark_config_with_tags(
         tags=["tlx"],
