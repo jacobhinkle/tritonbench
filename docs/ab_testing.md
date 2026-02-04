@@ -43,7 +43,23 @@ python run.py --op flex_attention --side-a="--n-heads-q 8" --side-b="--n-heads-q
 python run.py --op gemm --side-a="--m 1024 --n 1024 --k 1024" --side-b="--m 2048 --n 2048 --k 2048"
 ```
 
-### 3. Mixed Parameter Testing
+### 3. Environment Variable Testing
+You can test different environment variable settings between configurations:
+
+```bash
+# Test different Triton cache directories
+python run.py --op gemm --side-a="TRITON_CACHE_DIR=/tmp/cache1" --side-b="TRITON_CACHE_DIR=/tmp/cache2"
+
+# Test Torch Inductor settings
+python run.py --op flash_attention --side-a="TORCHINDUCTOR_CACHE_DIR=/tmp/a" --side-b="TORCHINDUCTOR_CACHE_DIR=/tmp/b"
+
+# Test with and without an environment variable
+python run.py --op vector_add --side-a="DEBUG_MODE=1" --side-b=""
+```
+
+Environment variables are specified as `KEY=VALUE` without dashes. They will be set before running each side and restored afterward.
+
+### 4. Mixed Parameter Testing
 You can test both global and operator-specific parameters simultaneously:
 
 ```bash
@@ -52,6 +68,17 @@ python run.py --op flash_attention --side-a="--warmup 50 --dtype fp16" --side-b=
 
 # Global precision + operator-specific parameters
 python run.py --op vector_add --side-a="--precision fp16 --n 1000000" --side-b="--precision fp32 --n 5000000"
+```
+
+### 5. Combined Environment Variables and Parameters
+You can combine environment variables with command-line arguments:
+
+```bash
+# Test environment variable with different warmup settings
+python run.py --op gemm --side-a="TRITON_CACHE_DIR=/tmp/a --warmup 50" --side-b="TRITON_CACHE_DIR=/tmp/b --warmup 100"
+
+# Multiple environment variables with parameters
+python run.py --op flash_attention --side-a="DEBUG=1 CACHE_DIR=/tmp/a --dtype fp16" --side-b="DEBUG=0 CACHE_DIR=/tmp/b --dtype bf16"
 ```
 
 ## Parameter Formats
@@ -82,12 +109,15 @@ python run.py --op flash_attention --side-a="--warmup 50 --dtype fp16 --batch-si
 A/B test output consists of three sections:
 
 ### 1. Configuration Analysis
-Shows differences between the two configurations:
+Shows differences between the two configurations, including environment variables:
 ```
 Configuration Differences:
+  ENV:TRITON_CACHE_DIR: /tmp/cache1     → /tmp/cache2
   warmup         : 25              → 100
   precision      : fp16            → fp32
 ```
+
+Environment variables are prefixed with `ENV:` in the output.
 
 ### 2. Performance Summary
 Shows average performance changes for each backend and metric:

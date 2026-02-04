@@ -186,13 +186,13 @@ def tritonbench_run(args: Optional[List[str]] = None):
 
         with gpu_lockdown(args.gpu_lockdown):
             try:
-                result_a, result_b = run_ab_test(args, extra_args, _run)
+                result_a, result_b, env_a, env_b = run_ab_test(args, extra_args, _run)
 
                 from tritonbench.utils.ab_test import parse_ab_config
 
                 config_a_args = parse_ab_config(args.side_a)
                 config_b_args = parse_ab_config(args.side_b)
-                compare_ab_results(result_a, result_b, config_a_args, config_b_args)
+                compare_ab_results(result_a, result_b, config_a_args, config_b_args, env_a, env_b)
 
             except Exception as e:
                 print(f"A/B test failed: {e}")

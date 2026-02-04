@@ -1,6 +1,7 @@
 """A/B testing utilities for tritonbench."""
 
 import argparse
+import os
 import shlex
 from typing import Dict, List, Tuple
 
@@ -16,6 +17,36 @@ def parse_ab_config(config_str: str) -> List[str]:
         return shlex.split(config_str)
     except ValueError as e:
         raise ValueError(f"Failed to parse configuration string '{config_str}': {e}")
+
+
+def parse_env_vars(config_args: List[str]) -> Tuple[Dict[str, str], List[str]]:
+    """
+    Parse environment variable assignments from configuration arguments.
+
+    Environment variables should be specified as KEY=VALUE (without dashes).
+    Returns a tuple of (env_vars_dict, remaining_args).
+
+    Example:
+        Input: ["TORCHINDUCTOR_CACHE_DIR=/tmp", "--warmup", "100"]
+        Output: ({"TORCHINDUCTOR_CACHE_DIR": "/tmp"}, ["--warmup", "100"])
+    """
+    env_vars = {}
+    remaining_args = []
+
+    for arg in config_args:
+        # Check if this looks like an environment variable (KEY=VALUE without leading dashes)
+        if "=" in arg and not arg.startswith("-"):
+            key, value = arg.split("=", 1)
+            # Validate that the key looks like a valid env var name
+            if key.isidentifier() or key.replace("_", "").replace("0", "").replace("1", "").replace("2", "").replace("3", "").replace("4", "").replace("5", "").replace("6", "").replace("7", "").replace("8", "").replace("9", "").isidentifier():
+                env_vars[key] = value
+            else:
+                # Not a valid env var name, treat as regular arg
+                remaining_args.append(arg)
+        else:
+            remaining_args.append(arg)
+
+    return env_vars, remaining_args
 
 
 def separate_global_and_op_args(config_args: List[str]) -> Tuple[List[str], List[str]]:
@@ -118,9 +149,9 @@ def update_args_with_global(
 
 
 def _analyze_config_differences(
-    config_a_args: List[str], config_b_args: List[str]
+    config_a_args: List[str], config_b_args: List[str], env_a: Dict[str, str], env_b: Dict[str, str]
 ) -> Dict[str, Tuple[str, str]]:
-    """Analyze differences between two configurations."""
+    """Analyze differences between two configurations including environment variables."""
 
     # Parse arguments into dictionaries
     def parse_config_to_dict(args):
@@ -149,7 +180,7 @@ def _analyze_config_differences(
     config_a = parse_config_to_dict(config_a_args)
     config_b = parse_config_to_dict(config_b_args)
 
-    # Find differences
+    # Find differences in command-line arguments
     differences = {}
     all_keys = set(config_a.keys()) | set(config_b.keys())
 
@@ -158,6 +189,14 @@ def _analyze_config_differences(
         val_b = config_b.get(key, "default")
         if val_a != val_b:
             differences[key] = (val_a, val_b)
+
+    # Find differences in environment variables
+    all_env_keys = set(env_a.keys()) | set(env_b.keys())
+    for key in all_env_keys:
+        val_a = env_a.get(key, "default")
+        val_b = env_b.get(key, "default")
+        if val_a != val_b:
+            differences[f"ENV:{key}"] = (val_a, val_b)
 
     return differences
 
@@ -223,8 +262,15 @@ def compare_ab_results(
     result_b: BenchmarkOperatorResult,
     config_a_args: List[str],
     config_b_args: List[str],
+    env_a: Dict[str, str] = None,
+    env_b: Dict[str, str] = None,
 ):
     """Compare A/B test results"""
+    if env_a is None:
+        env_a = {}
+    if env_b is None:
+        env_b = {}
+
     if not result_a or not result_b:
         print("\n[A/B Comparison] ERROR: One or both results are invalid")
         return
@@ -267,7 +313,7 @@ def compare_ab_results(
 
     print("Configuration Differences:")
     try:
-        differences = _analyze_config_differences(config_a_args, config_b_args)
+        differences = _analyze_config_differences(config_a_args, config_b_args, env_a, env_b)
 
         if differences:
             for param, (val_a, val_b) in differences.items():
@@ -379,8 +425,8 @@ def compare_ab_results(
 
 def run_ab_test(
     base_args: argparse.Namespace, base_extra_args: List[str], _run_func
-) -> Tuple[BenchmarkOperatorResult, BenchmarkOperatorResult]:
-    """Run A/B test with two configurations and return both results."""
+) -> Tuple[BenchmarkOperatorResult, BenchmarkOperatorResult, Dict[str, str], Dict[str, str]]:
+    """Run A/B test with two configurations and return both results and their env vars."""
 
     # Parse A and B configurations
     try:
@@ -397,6 +443,15 @@ def run_ab_test(
 
     print(f"[A/B Test] Configuration A: {' '.join(config_a_args)}")
     print(f"[A/B Test] Configuration B: {' '.join(config_b_args)}")
+
+    # Parse environment variables from configurations
+    env_a, config_a_args = parse_env_vars(config_a_args)
+    env_b, config_b_args = parse_env_vars(config_b_args)
+
+    if env_a:
+        print(f"[A/B Test] Environment vars A: {', '.join(f'{k}={v}' for k, v in env_a.items())}")
+    if env_b:
+        print(f"[A/B Test] Environment vars B: {', '.join(f'{k}={v}' for k, v in env_b.items())}")
 
     # Separate global and operator-specific arguments
     global_a_args, op_a_args = separate_global_and_op_args(config_a_args)
@@ -420,8 +475,15 @@ def run_ab_test(
     extra_args_a = base_extra_args + op_a_args
     extra_args_b = base_extra_args + op_b_args
 
+    # Save original environment variables that we'll modify
+    original_env = {}
+    for key in set(env_a.keys()) | set(env_b.keys()):
+        original_env[key] = os.environ.get(key)
+
     print("=" * 60)
     print(f"Running Side A: {' '.join(config_a_args)}")
+    if env_a:
+        print(f"  Environment vars: {', '.join(f'{k}={v}' for k, v in env_a.items())}")
     if global_a_args:
         print(f"  Global args: {' '.join(global_a_args)}")
     if op_a_args:
@@ -429,15 +491,28 @@ def run_ab_test(
     print("=" * 60)
 
     try:
+        # Apply environment variables for side A
+        for key, value in env_a.items():
+            os.environ[key] = value
+
         result_a = _run_func(args_a, extra_args_a)
         if not result_a:
             raise RuntimeError("Side A returned empty result")
     except Exception as e:
         print(f"ERROR: Side A failed to run: {e}")
         raise RuntimeError(f"A/B test failed - Side A error: {e}")
+    finally:
+        # Restore original environment after side A
+        for key in env_a.keys():
+            if original_env[key] is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original_env[key]
 
     print("\n" + "=" * 60)
     print(f"Running Side B: {' '.join(config_b_args)}")
+    if env_b:
+        print(f"  Environment vars: {', '.join(f'{k}={v}' for k, v in env_b.items())}")
     if global_b_args:
         print(f"  Global args: {' '.join(global_b_args)}")
     if op_b_args:
@@ -445,11 +520,22 @@ def run_ab_test(
     print("=" * 60)
 
     try:
+        # Apply environment variables for side B
+        for key, value in env_b.items():
+            os.environ[key] = value
+
         result_b = _run_func(args_b, extra_args_b)
         if not result_b:
             raise RuntimeError("Side B returned empty result")
     except Exception as e:
         print(f"ERROR: Side B failed to run: {e}")
         raise RuntimeError(f"A/B test failed - Side B error: {e}")
+    finally:
+        # Restore original environment after side B
+        for key in env_b.keys():
+            if original_env[key] is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original_env[key]
 
-    return result_a, result_b
+    return result_a, result_b, env_a, env_b
