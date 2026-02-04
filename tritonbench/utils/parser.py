@@ -123,6 +123,12 @@ def get_parser(args=None):
         "--output-json", type=str, default=None, help="Output result json to file."
     )
     parser.add_argument(
+        "--ab-test-pickle-output",
+        type=str,
+        default=None,
+        help="Internal: Output pickled BenchmarkOperatorResult for A/B testing.",
+    )
+    parser.add_argument(
         "--skip-print",
         action="store_true",
         help="Skip printing result.",

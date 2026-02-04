@@ -2,10 +2,16 @@
 
 import argparse
 import os
+import pickle
 import shlex
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 from .parser import get_parser
+from .path_utils import REPO_PATH
 from .triton_op import BenchmarkOperatorResult, REGISTERED_X_VALS
 
 
@@ -426,7 +432,11 @@ def compare_ab_results(
 def run_ab_test(
     base_args: argparse.Namespace, base_extra_args: List[str], _run_func
 ) -> Tuple[BenchmarkOperatorResult, BenchmarkOperatorResult, Dict[str, str], Dict[str, str]]:
-    """Run A/B test with two configurations and return both results and their env vars."""
+    """Run A/B test with two configurations and return both results and their env vars.
+
+    Note: When environment variables are specified, this function will force isolation mode
+    to ensure that libraries initialize with the correct environment variables.
+    """
 
     # Parse A and B configurations
     try:
@@ -475,10 +485,14 @@ def run_ab_test(
     extra_args_a = base_extra_args + op_a_args
     extra_args_b = base_extra_args + op_b_args
 
-    # Save original environment variables that we'll modify
-    original_env = {}
-    for key in set(env_a.keys()) | set(env_b.keys()):
-        original_env[key] = os.environ.get(key)
+    # If environment variables are specified, we need to run in isolation mode
+    # to ensure libraries initialize with the correct environment
+    need_isolation = bool(env_a or env_b)
+
+    if need_isolation:
+        print("[A/B Test] Environment variables detected - forcing isolation mode")
+        print("[A/B Test] Each side will run in a separate subprocess with its environment")
+        print()
 
     print("=" * 60)
     print(f"Running Side A: {' '.join(config_a_args)}")
@@ -491,23 +505,15 @@ def run_ab_test(
     print("=" * 60)
 
     try:
-        # Apply environment variables for side A
-        for key, value in env_a.items():
-            os.environ[key] = value
-
-        result_a = _run_func(args_a, extra_args_a)
+        if need_isolation:
+            result_a = _run_isolated(args_a, extra_args_a, env_a)
+        else:
+            result_a = _run_func(args_a, extra_args_a)
         if not result_a:
             raise RuntimeError("Side A returned empty result")
     except Exception as e:
         print(f"ERROR: Side A failed to run: {e}")
         raise RuntimeError(f"A/B test failed - Side A error: {e}")
-    finally:
-        # Restore original environment after side A
-        for key in env_a.keys():
-            if original_env[key] is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = original_env[key]
 
     print("\n" + "=" * 60)
     print(f"Running Side B: {' '.join(config_b_args)}")
@@ -520,22 +526,92 @@ def run_ab_test(
     print("=" * 60)
 
     try:
-        # Apply environment variables for side B
-        for key, value in env_b.items():
-            os.environ[key] = value
-
-        result_b = _run_func(args_b, extra_args_b)
+        if need_isolation:
+            result_b = _run_isolated(args_b, extra_args_b, env_b)
+        else:
+            result_b = _run_func(args_b, extra_args_b)
         if not result_b:
             raise RuntimeError("Side B returned empty result")
     except Exception as e:
         print(f"ERROR: Side B failed to run: {e}")
         raise RuntimeError(f"A/B test failed - Side B error: {e}")
-    finally:
-        # Restore original environment after side B
-        for key in env_b.keys():
-            if original_env[key] is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = original_env[key]
 
     return result_a, result_b, env_a, env_b
+
+
+def _run_isolated(args: argparse.Namespace, extra_args: List[str], extra_env: Dict[str, str]) -> BenchmarkOperatorResult:
+    """Run benchmark in an isolated subprocess with custom environment variables.
+
+    This ensures that libraries initialize with the correct environment variables,
+    rather than just modifying os.environ in the parent process.
+
+    The subprocess runs the benchmark and saves the BenchmarkOperatorResult to a pickle file,
+    which we then load and return.
+    """
+    # Create a temporary file to store the pickled result
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.pkl', delete=False) as f:
+        output_pkl = f.name
+
+    try:
+        # Build the command to run in subprocess
+        # We need to reconstruct the command line arguments
+        cmd = [sys.executable, "run.py", "--op", args.op]
+
+        # Add important arguments from args
+        if hasattr(args, 'warmup') and args.warmup is not None:
+            cmd.extend(["--warmup", str(args.warmup)])
+        if hasattr(args, 'rep') and args.rep is not None:
+            cmd.extend(["--rep", str(args.rep)])
+        if hasattr(args, 'precision') and args.precision:
+            cmd.extend(["--precision", args.precision])
+        if hasattr(args, 'device') and args.device:
+            cmd.extend(["--device", args.device])
+        if hasattr(args, 'mode') and args.mode:
+            cmd.extend(["--mode", args.mode])
+        if hasattr(args, 'num_inputs') and args.num_inputs is not None:
+            cmd.extend(["--num-inputs", str(args.num_inputs)])
+        if hasattr(args, 'x_vals') and args.x_vals:
+            cmd.extend(["--x-vals", args.x_vals])
+        if hasattr(args, 'only') and args.only:
+            cmd.extend(["--only", args.only])
+        if hasattr(args, 'skip') and args.skip:
+            cmd.extend(["--skip", args.skip])
+
+        # Add a special flag to indicate we should save the result
+        cmd.extend(["--ab-test-pickle-output", output_pkl])
+
+        # Add extra args
+        cmd.extend(extra_args)
+
+        # Setup environment
+        subprocess_env = os.environ.copy()
+        subprocess_env.update(extra_env)
+
+        # Run the subprocess
+        result = subprocess.run(
+            cmd,
+            cwd=REPO_PATH,
+            env=subprocess_env,
+            capture_output=True,
+            text=True,
+        )
+
+        # Print subprocess output for debugging
+        if result.stdout:
+            print(result.stdout, end='')
+        if result.stderr:
+            print(result.stderr, end='', file=sys.stderr)
+
+        if result.returncode != 0:
+            raise RuntimeError(f"Subprocess failed with return code {result.returncode}")
+
+        # Load the pickled result
+        with open(output_pkl, 'rb') as f:
+            benchmark_result = pickle.load(f)
+
+        return benchmark_result
+
+    finally:
+        # Clean up the temporary file
+        if os.path.exists(output_pkl):
+            os.unlink(output_pkl)

@@ -270,6 +270,11 @@ def _run(args: argparse.Namespace, extra_args: List[str]) -> BenchmarkOperatorRe
         if args.output_json:
             with open(args.output_json, "w") as f:
                 metrics.write_json_to_file(f)
+        if hasattr(args, 'ab_test_pickle_output') and args.ab_test_pickle_output:
+            import pickle
+            with open(args.ab_test_pickle_output, 'wb') as f:
+                pickle.dump(metrics, f)
+            logger.info(f"[tritonbench] Output result pickle to {args.ab_test_pickle_output}")
         if args.output_dir:
             if args.csv:
                 output_file = os.path.join(args.output_dir, f"{args.op}.csv")

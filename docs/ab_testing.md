@@ -57,7 +57,9 @@ python run.py --op flash_attention --side-a="TORCHINDUCTOR_CACHE_DIR=/tmp/a" --s
 python run.py --op vector_add --side-a="DEBUG_MODE=1" --side-b=""
 ```
 
-Environment variables are specified as `KEY=VALUE` without dashes. They will be set before running each side and restored afterward.
+Environment variables are specified as `KEY=VALUE` without dashes.
+
+**Important**: When environment variables are specified, each side runs in an **isolated subprocess** with its own environment. This ensures that libraries (like Triton, PyTorch, etc.) initialize correctly with the specified environment variables, rather than just modifying `os.environ` in the parent process.
 
 ### 4. Mixed Parameter Testing
 You can test both global and operator-specific parameters simultaneously:
