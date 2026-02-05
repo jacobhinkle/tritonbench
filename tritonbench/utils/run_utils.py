@@ -39,7 +39,6 @@ try:
 except ImportError:
     usage_report_logger = lambda *args, **kwargs: None
 
-BENCHMARKS_OUTPUT_DIR = REPO_PATH.joinpath(".benchmarks")
 FWD_ONLY_OPS = ["triton_dot_compress", "triton_group_index_select"]
 BWD_ARGS_OPS = {
     # flash_attention/triton_tutorial_flash_v2 does not support non-causal in backward
@@ -408,13 +407,3 @@ def run_in_task(
     except KeyboardInterrupt:
         logger.warning("[tritonbench] KeyboardInterrupt received, exiting...")
         sys.exit(1)
-
-
-def setup_output_dir(bm_name: str, ci: bool = False):
-    current_timestamp = datetime.fromtimestamp(time.time()).strftime("%Y%m%d%H%M%S")
-    output_dir = BENCHMARKS_OUTPUT_DIR.joinpath(bm_name, f"run-{current_timestamp}")
-    Path.mkdir(output_dir, parents=True, exist_ok=True)
-    # set writable permission for all users (used by the ci env)
-    if ci:
-        output_dir.chmod(0o777)
-    return current_timestamp, output_dir.absolute()
