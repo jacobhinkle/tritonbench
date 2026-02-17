@@ -5,10 +5,8 @@ Output default metrics.
 """
 
 import argparse
-import json
 import logging
 import os
-from pathlib import Path
 from typing import Any, Dict
 
 import yaml
@@ -18,47 +16,19 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-
-from common import setup_tritonbench_cwd
+from ..common import run_benchmark_config_ci, setup_output_dir, setup_tritonbench_cwd
 
 setup_tritonbench_cwd()
 
-from tritonbench.utils.env_utils import IS_BLACKWELL
-
-TLX_BENCHMARKS_BLACKWELL = {
-    "gemm": [
-        "tlx_matmul",
-        "tlx_matmul_ws",
-        "tlx_matmul_clc",
-        "tlx_matmul_pipelined",
-        "tlx_matmul_2cta",
-    ],
-}
-
-
-def gen_tlx_benchmarks():
-    acc: dict[Unknown, Unknown] = {}
-    for op in TLX_BENCHMARKS_BLACKWELL:
-        for backend in TLX_BENCHMARKS_BLACKWELL[op]:
-            if op not in acc:
-                acc[op] = {backend: {"tags": ["tlx"]}}
-            else:
-                acc[op].update(
-                    {
-                        backend: {
-                            "tags": ["tlx"],
-                        }
-                    }
-                )
-    return acc
-
 
 def gen_tlx_benchmark_config() -> Dict[str, Any]:
-    from tlx_tutorial_plugin import load_tlx_tutorial_backends
     from tritonbench.metadata.query import get_benchmark_config_with_tags
+
+    from .tlx_tutorial_plugin import load_tlx_tutorial_backends
 
     def _load_benchmarks(config_path: str) -> Dict[str, Any]:
         out = {}
+        print(config_path)
         with open(config_path, "r") as f:
             obj = yaml.safe_load(f)
         if not obj:
@@ -67,18 +37,19 @@ def gen_tlx_benchmark_config() -> Dict[str, Any]:
             # bypass disabled benchmarks
             if obj[benchmark_name].get("disabled", False):
                 continue
+            out[benchmark_name] = obj[benchmark_name]
         return out
 
     out = _load_benchmarks(os.path.join(CURRENT_DIR, "tlx_benchmarks.yaml"))
-    tlx_tutorial_benchmark_metadata = load_tlx_tutorial_backends()
-    if IS_BLACKWELL:
-        tlx_tutorial_benchmark_metadata.update(gen_tlx_benchmarks())
+    # TODO: update this once we have a better way to load all backends
+    # tlx_tutorial_benchmark_metadata = load_tlx_tutorial_backends()
     # only load benchmarks from runtime metadata
-    metadata_benchmarks = get_benchmark_config_with_tags(
-        tags=["tlx"],
-        runtime_metadata=tlx_tutorial_benchmark_metadata,
-        runtime_only=True,
-    )
+    # metadata_benchmarks = get_benchmark_config_with_tags(
+    #     tags=["tlx"],
+    #     runtime_metadata=tlx_tutorial_benchmark_metadata,
+    #     runtime_only=True,
+    # )
+    metadata_benchmarks = {}
     out.update(metadata_benchmarks)
     return out
 
@@ -98,57 +69,38 @@ def run():
     parser.add_argument(
         "--log-scuba", action="store_true", help="Upload results to Scuba."
     )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output dir, default to .benchmark/tlx/run-<timestamp>",
+    )
     args = parser.parse_args()
-    setup_tritonbench_cwd()
-    from tritonbench.utils.run_utils import run_in_task, setup_output_dir
-    from tritonbench.utils.scuba_utils import decorate_benchmark_data, log_benchmark
 
-    run_timestamp, output_dir = setup_output_dir("tlx", ci=args.ci)
     # Run each operator
-    output_files = []
     tlx_benchmarks = gen_tlx_benchmark_config()
     print(yaml.dump(tlx_benchmarks))
     if args.generate_config:
+        if not args.output_dir:
+            run_timestamp, output_dir = setup_output_dir(args.name, ci=args.ci)
+        else:
+            output_dir = args.output_dir
         with open(os.path.join(output_dir, "tlx_benchmarks_autogen.yaml"), "w") as f:
             yaml.dump(tlx_benchmarks, f)
         logger.info(f"[tlx benchmark] Generated config file to {output_dir}.")
         return
-    for tlx_bench in tlx_benchmarks:
-        if args.op and f"--op {args.op}" not in tlx_benchmarks[tlx_bench]["args"]:
-            continue
-        op_args = tlx_benchmarks[tlx_bench]["args"].split(" ") + [
+    run_benchmark_config_ci(
+        args.name,
+        tlx_benchmarks,
+        extra_args=[
             "--plugin",
             "benchmarks.tlx.tlx_tutorial_plugin.load_tlx_tutorial_backends",
-        ]
-        output_file = output_dir.joinpath(f"{tlx_bench}.json")
-        op_args.extend(["--output-json", str(output_file.absolute())])
-        run_in_task(op_args=op_args, benchmark_name=tlx_bench)
-        # write pass or fail to result json
-        # todo: check every input shape has passed
-        output_file_name = Path(output_file).stem
-        if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
-            logger.warning(f"[tlx benchmark] Failed to run {output_file_name}.")
-            with open(output_file, "w") as f:
-                json.dump({f"tritonbench_{output_file_name}-pass": 0}, f)
-        else:
-            with open(output_file, "r") as f:
-                obj = json.load(f)
-            obj[f"tritonbench_{output_file_name}-pass"] = 1
-            with open(output_file, "w") as f:
-                json.dump(obj, f, indent=4)
-        output_files.append(output_file)
-    # Reduce all operator CSV outputs to a single output json
-    benchmark_data = [json.load(open(f, "r")) for f in output_files]
-    aggregated_obj = decorate_benchmark_data(
-        args.name, run_timestamp, args.ci, benchmark_data
+        ],
+        output_dir=args.output_dir,
+        op=args.op,
+        ci=args.ci,
+        log_scuba=args.log_scuba,
     )
-    result_json_file = os.path.join(output_dir, "result.json")
-    with open(result_json_file, "w") as fp:
-        json.dump(aggregated_obj, fp, indent=4)
-    logger.info(f"[tlx benchmark] logging result json file to {result_json_file}.")
-    if args.log_scuba:
-        log_benchmark(aggregated_obj)
-        logger.info(f"[tlx benchmark] logging results to scuba.")
 
 
 if __name__ == "__main__":
