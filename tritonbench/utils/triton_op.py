@@ -27,6 +27,7 @@ import tabulate
 import torch
 import triton
 from torch.utils._pytree import tree_map
+from triton.runtime.errors import OutOfResources as TritonOutOfResources
 from tritonbench.components.do_bench import do_bench_wrapper, Latency
 from tritonbench.components.export import export_data
 from tritonbench.components.power import PowerManagerTask
@@ -2082,6 +2083,8 @@ class BenchmarkOperator(metaclass=PostInitProcessor):
                 self.dump_ir(input_id, fn, self.tb_args.dump_ir)
         except torch.cuda.OutOfMemoryError:
             metrics.error_msg = "CUDA OOM"
+        except TritonOutOfResources as e:
+            metrics.error_msg = f"Triton OOR: {e}"
         except NotImplementedError as e:
             metrics.error_msg = str(e)
         except CudaGraphError:
