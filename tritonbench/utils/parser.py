@@ -11,6 +11,7 @@ from tritonbench.utils.constants import (
     DEFAULT_WARMUP,
 )
 from tritonbench.utils.env_utils import AVAILABLE_PRECISIONS, is_fbcode
+from tritonbench.utils.gpu_utils import get_gpu_device_name
 
 
 def get_parser(args=None):
@@ -399,6 +400,12 @@ def get_parser(args=None):
             default="stable",
             type=str,
             help="Set what version of Triton we are using for logging purposes.",
+        )
+        parser.add_argument(
+            "--hardware",
+            type=str,
+            default=get_gpu_device_name(),
+            help="Specify the hardware target (e.g., H100, B200, MI300) for Scuba logging.",
         )
         # Diode args (Diode not available in OSS)
         parser.add_argument(
